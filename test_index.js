@@ -10,14 +10,15 @@ const mapName = [
 ]
 
 const tierName = ['Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Grandmaster']
+const roleName = ['tank', 'damage', 'support']
 
 let queryString = {
     'input': 'PC',
-    'map': 'example_map',
+    'map': 'all-maps',
     'region': 'Asia',
     'role': 'All',
     'rq': '2',
-    'tier': 'example_tier'
+    'tier': 'All'
 }
 
 const baseURL = 'https://overwatch.blizzard.com/ko-kr/rates/data/?'
