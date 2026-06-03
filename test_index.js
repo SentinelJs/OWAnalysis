@@ -30,21 +30,48 @@ function generateURL(queryString) {
     return url.slice(0, -1)
 }
 
-for (let i = 0; i < mapName.length; i++) {
-    for (let j = 0; j < tierName.length; j++) {
-        queryString['map'] = mapName[i][0]
-        queryString['tier'] = tierName[j]
-        console.log(generateURL(queryString))
+async function getMapData(map) {
+    let rate_result = {}
+    let icon_result = {}
 
-        const res = axios.get(generateURL(queryString), {
+    for (let tier of tierName) {
+        queryString['map'] = map
+        queryString['tier'] = tier
+        const res = await axios.get(generateURL(queryString), {
             headers: {
                 'User-Agent': USERAGENT
             }
-        }).then((response) => {
-            const data = response.data['rates']['rates']
-            console.log(response.data)
-        }).catch((error) => {
-            console.error(error)
         })
+
+        for (let hero_data of res.data['rates']['rates']) {
+            const hero = hero_data['cells']['name']
+            const iconURL = hero_data['hero']['portrait']
+
+            if (rate_result[hero] == undefined) {
+                rate_result[hero] = []
+            }
+
+            if (icon_result[hero] == undefined) {
+                icon_result[hero] = iconURL
+            }
+    
+            rate_result[hero].push({
+                'tier': tier,
+                'winrate': hero_data['cells']['winrate'],
+                'pickrate': hero_data['cells']['pickrate'],
+                'banrate': hero_data['cells']['banrate']
+            })
+        }
+    }
+
+    return {
+        'rates': rate_result,
+        'icons': icon_result
     }
 }
+
+;(async () => {
+    const map = 'eichenwalde'
+    const data = await getMapData(map)
+    console.log(data.rates, data.icons['아나'])
+})()
