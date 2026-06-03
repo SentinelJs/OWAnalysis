@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OWAnalysis</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <main class="app-shell">
+        <section class="toolbar" aria-label="analysis controls">
+            <div class="title-group">
+                <h1>OWAnalysis</h1>
+                <p id="summary">Select a map to compare hero winrate statistics against all maps.</p>
+            </div>
+
+            <div class="controls">
+                <label>
+                    <span>Map</span>
+                    <select id="mapSelect"></select>
+                </label>
+
+                <label>
+                    <span>Weight</span>
+                    <select id="weightSelect">
+                        <option value="softmax">Softmax</option>
+                        <option value="raw">Raw</option>
+                        <option value="none">None</option>
+                    </select>
+                </label>
+            </div>
+        </section>
+
+        <section class="chart-section" aria-label="winrate diff scatter plot">
+            <div class="chart-header">
+                <div>
+                    <h2>Winrate Diff Scatter</h2>
+                    <p>x: mean diff, y: log2(abs standard deviation diff)</p>
+                </div>
+                <div class="chart-header-actions">
+                    <div class="zoom-tools" aria-label="chart zoom controls">
+                        <button type="button" id="zoomOut" class="tool-button" aria-label="축소" title="축소">-</button>
+                        <button type="button" id="zoomReset" class="tool-button" aria-label="원점으로 돌아가기" title="원점으로 돌아가기">0</button>
+                        <button type="button" id="zoomIn" class="tool-button" aria-label="확대" title="확대">+</button>
+                    </div>
+                    <div id="status" class="status">Loading...</div>
+                </div>
+            </div>
+
+            <div class="chart-wrap">
+                <div class="axis-label x-label">winrate mean diff</div>
+                <div class="axis-label y-label">log2 abs winrate standard deviation diff</div>
+                <div id="chart" class="chart" role="img" aria-label="Hero icon scatter plot"></div>
+            </div>
+
+            <div class="quadrant-guide" aria-label="quadrant interpretation">
+                <div>
+                    <strong>오른쪽 위</strong>
+                    <span>승률이 좋고 숙련도 영향도 큼. 고점은 있으나 조건을 타는 픽.</span>
+                </div>
+                <div>
+                    <strong>오른쪽 아래</strong>
+                    <span>승률이 좋고 숙련도 영향은 작음. 이 맵에서 안정적으로 좋은 픽.</span>
+                </div>
+                <div>
+                    <strong>왼쪽 위</strong>
+                    <span>승률은 낮지만 숙련도 영향은 큼. 특정 조건에서만 살아나는 픽.</span>
+                </div>
+                <div>
+                    <strong>왼쪽 아래</strong>
+                    <span>승률이 낮고 숙련도 영향도 작음. 전반적으로 힘을 못 받는 맵 약세 픽.</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="table-section" aria-label="hero analysis table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Hero</th>
+                        <th>Mean Diff</th>
+                        <th>Variance Diff</th>
+                        <th>Pick Mean Diff</th>
+                        <th>Cov Diff</th>
+                    </tr>
+                </thead>
+                <tbody id="heroTable"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <div id="tooltip" class="tooltip" hidden></div>
+    <script src="/app.js"></script>
+</body>
+</html>
