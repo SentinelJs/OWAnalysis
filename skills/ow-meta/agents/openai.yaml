@@ -1,0 +1,4 @@
+interface:
+  display_name: "OW Meta"
+  short_description: "Analyze Overwatch hero rates by map and role"
+  default_prompt: "Use $ow-meta to recommend meta picks for a map and role."

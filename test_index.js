@@ -72,7 +72,7 @@ async function getMapData(map) {
 }
 
 ;(async () => {
-    const map = 'eichenwalde'
-    const data = await getMapData(map)
+    // const map = 'eichenwalde'
+    const data = await getMapData('all-maps')
     console.log(data.rates, data.icons['아나'])
 })()
