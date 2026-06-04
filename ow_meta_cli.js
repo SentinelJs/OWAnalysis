@@ -9,7 +9,7 @@ const DEFAULTS = {
   map: 'all-maps',
   region: 'Asia',
   role: 'All',
-  rq: '2',
+  rq: '1',
   tiers: ['All'],
   top: 5,
   format: 'json'
