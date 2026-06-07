@@ -1,5 +1,14 @@
 const mapSelect = document.querySelector('#mapSelect')
 const weightSelect = document.querySelector('#weightSelect')
+const tierWeightForm = document.querySelector('#tierWeightForm')
+const tierWeightInputs = [...document.querySelectorAll('[data-tier-weight]')]
+const tierWeightValueInputs = [...document.querySelectorAll('[data-tier-value]')]
+const resetTierWeightsButton = document.querySelector('#resetTierWeights')
+const globalWeightMinInput = document.querySelector('#globalWeightMin')
+const globalWeightMaxInput = document.querySelector('#globalWeightMax')
+const tierWeightModeSelect = document.querySelector('#tierWeightMode')
+const temperatureSlider = document.querySelector('#temperatureSlider')
+const temperatureInput = document.querySelector('#temperatureInput')
 const chart = document.querySelector('#chart')
 const status = document.querySelector('#status')
 const summary = document.querySelector('#summary')
@@ -12,6 +21,21 @@ const zoomResetButton = document.querySelector('#zoomReset')
 const zoomStep = 1.35
 const minZoom = 1
 const maxZoom = 10
+const defaultTierWeights = Object.fromEntries(
+    tierWeightInputs.map(input => [input.dataset.tierWeight, Number(input.defaultValue)])
+)
+const defaultWeightBounds = {
+    min: Math.min(...Object.values(defaultTierWeights)),
+    max: Math.max(...Object.values(defaultTierWeights))
+}
+const tierOrder = tierWeightInputs.map(input => input.dataset.tierWeight)
+const tierWeightSliderByTier = Object.fromEntries(
+    tierWeightInputs.map(input => [input.dataset.tierWeight, input])
+)
+const tierWeightValueByTier = Object.fromEntries(
+    tierWeightValueInputs.map(input => [input.dataset.tierValue, input])
+)
+const defaultSoftmaxTemperature = Number(temperatureInput.defaultValue)
 const zoomState = {
     scale: 1,
     offsetX: 0,
@@ -19,6 +43,9 @@ const zoomState = {
 }
 let plotLayer = null
 let panStart = null
+let analysisSource = null
+let sourceStdDevDiffLogFloor = 0.001
+let renderFrame = null
 
 function formatNumber(value, digits = 3) {
     return Number.isFinite(value) ? value.toFixed(digits) : '0.000'
@@ -34,6 +61,221 @@ function classForValue(value) {
     }
 
     return ''
+}
+
+function formatWeightControlValue(value) {
+    if (!Number.isFinite(value)) {
+        return '0'
+    }
+
+    return String(Number(value.toPrecision(8)))
+}
+
+function readGlobalWeightBounds() {
+    const min = Number(globalWeightMinInput.value)
+    const max = Number(globalWeightMaxInput.value)
+
+    if (!globalWeightMinInput.checkValidity() || !globalWeightMaxInput.checkValidity() || !Number.isFinite(min) || !Number.isFinite(max) || min >= max) {
+        return null
+    }
+
+    return { min, max }
+}
+
+function readSoftmaxTemperature() {
+    const temperature = Number(temperatureInput.value)
+
+    if (!temperatureInput.checkValidity() || !Number.isFinite(temperature) || temperature <= 0) {
+        return null
+    }
+
+    return temperature
+}
+
+function syncTemperatureControls(source = analysisSource) {
+    const bounds = source?.temperatureBounds
+
+    if (bounds) {
+        temperatureSlider.min = bounds.min
+        temperatureSlider.max = bounds.max
+        temperatureInput.min = bounds.min
+        temperatureInput.max = bounds.max
+    }
+
+    if (!temperatureInput.checkValidity()) {
+        return false
+    }
+
+    temperatureSlider.value = temperatureInput.value
+    return true
+}
+
+function applyGlobalWeightBounds() {
+    const bounds = readGlobalWeightBounds()
+
+    if (!bounds) {
+        status.textContent = 'Invalid range'
+        return false
+    }
+
+    for (const tier of tierOrder) {
+        const slider = tierWeightSliderByTier[tier]
+        const valueInput = tierWeightValueByTier[tier]
+        const clampedValue = clamp(Number(valueInput.value || slider.value), bounds.min, bounds.max)
+
+        slider.min = bounds.min
+        slider.max = bounds.max
+        valueInput.min = bounds.min
+        valueInput.max = bounds.max
+        slider.value = formatWeightControlValue(clampedValue)
+        valueInput.value = formatWeightControlValue(clampedValue)
+    }
+
+    if (tierWeightModeSelect.value !== 'custom') {
+        return applyTierWeightMode()
+    }
+
+    return true
+}
+
+function writeTierWeights(weights) {
+    for (const tier of tierOrder) {
+        const value = weights[tier]
+
+        tierWeightSliderByTier[tier].value = formatWeightControlValue(value)
+        tierWeightValueByTier[tier].value = formatWeightControlValue(value)
+    }
+}
+
+function generateTierWeights(mode, bounds) {
+    const tierCount = tierOrder.length
+    const lastIndex = tierCount - 1
+    const midpoint = (bounds.min + bounds.max) / 2
+
+    if (mode === 'uniform') {
+        return Object.fromEntries(tierOrder.map(tier => [tier, midpoint]))
+    }
+
+    if (mode === 'linear') {
+        const platinumIndex = tierOrder.indexOf('Platinum')
+
+        if (bounds.max - bounds.min < lastIndex) {
+            return null
+        }
+
+        return Object.fromEntries(tierOrder.map((tier, index) => [tier, midpoint + index - platinumIndex]))
+    }
+
+    if (mode === 'reverse-linear') {
+        const platinumIndex = tierOrder.indexOf('Platinum')
+
+        if (bounds.max - bounds.min < lastIndex) {
+            return null
+        }
+
+        return Object.fromEntries(tierOrder.map((tier, index) => [tier, midpoint - index + platinumIndex]))
+    }
+
+    if (mode === 'exp' || mode === 'reverse-exp') {
+        if (bounds.min <= 0 || bounds.max <= 0) {
+            return null
+        }
+
+        const minCoefficient = Math.log(bounds.min)
+        const step = (Math.log(bounds.max) - minCoefficient) / lastIndex
+        const values = tierOrder.map((tier, index) => Math.exp(minCoefficient + step * index))
+
+        if (mode === 'reverse-exp') {
+            values.reverse()
+        }
+
+        return Object.fromEntries(tierOrder.map((tier, index) => [tier, values[index]]))
+    }
+
+    if (mode === 'log' || mode === 'reverse-log') {
+        const minCoefficient = Math.exp(bounds.min)
+        const maxCoefficient = Math.exp(bounds.max)
+        const coefficientStep = (maxCoefficient - minCoefficient) / lastIndex
+        const values = tierOrder.map((tier, index) => {
+            const coefficient = minCoefficient + coefficientStep * index
+
+            return Math.log(coefficient)
+        })
+
+        if (mode === 'reverse-log') {
+            values.reverse()
+        }
+
+        return Object.fromEntries(tierOrder.map((tier, index) => [tier, values[index]]))
+    }
+
+    return null
+}
+
+function applyTierWeightMode() {
+    const mode = tierWeightModeSelect.value
+
+    if (mode === 'custom') {
+        return true
+    }
+
+    const bounds = readGlobalWeightBounds()
+
+    if (!bounds) {
+        status.textContent = 'Invalid range'
+        return false
+    }
+
+    const weights = generateTierWeights(mode, bounds)
+
+    if (!weights) {
+        if (mode === 'exp' || mode === 'reverse-exp') {
+            status.textContent = 'Exp mode needs positive min/max'
+        } else if (mode === 'linear' || mode === 'reverse-linear') {
+            status.textContent = 'Linear mode needs max-min >= 6'
+        } else {
+            status.textContent = 'Invalid weight mode'
+        }
+
+        return false
+    }
+
+    writeTierWeights(weights)
+    return true
+}
+
+function readTierWeights() {
+    const weights = {}
+
+    for (const input of tierWeightValueInputs) {
+        const value = input.value.trim()
+
+        if (!value || !input.checkValidity()) {
+            return null
+        }
+
+        weights[input.dataset.tierValue] = Number(value)
+    }
+
+    return weights
+}
+
+function resetTierWeights() {
+    for (const tier of tierOrder) {
+        const value = defaultTierWeights[tier]
+        tierWeightSliderByTier[tier].value = value
+        tierWeightValueByTier[tier].value = value
+    }
+}
+
+function formatTierWeightSummary(weights) {
+    const values = Object.values(weights ?? {}).filter(Number.isFinite)
+
+    if (!values.length) {
+        return ''
+    }
+
+    return `weights ${formatNumber(Math.min(...values), 1)}-${formatNumber(Math.max(...values), 1)}`
 }
 
 function normalizeDataDomain(values, edgePaddingPercent = 5) {
@@ -102,6 +344,159 @@ function zoomChart(multiplier) {
     }
 
     applyChartTransform()
+}
+
+class HeroStatsAnalyzer {
+    constructor(heroData, tierWeight, options = {}) {
+        this.heroData = heroData
+        this.weightMode = options.weightMode ?? 'softmax'
+        this.temperature = options.temperature ?? defaultSoftmaxTemperature
+        this.tierWeight = HeroStatsAnalyzer.createTierWeight(tierWeight, this.weightMode, this.temperature)
+        this.pickrateBasedTierWeightCache = {}
+
+        for (const heroName in heroData) {
+            this.pickrateBasedTierWeightCache[heroName] = this.createPickrateBasedTierWeight(heroName, tierWeight, this.temperature)
+        }
+    }
+
+    static createTierWeight(tierWeight, weightMode, temperature = defaultSoftmaxTemperature) {
+        if (weightMode === 'none') {
+            return Object.fromEntries(Object.keys(tierWeight).map(tier => [tier, 1]))
+        }
+
+        if (weightMode === 'raw') {
+            return { ...tierWeight }
+        }
+
+        const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + Math.exp(weight / temperature), 0)
+        return Object.fromEntries(
+            Object.entries(tierWeight).map(([tier, weight]) => [tier, Math.exp(weight / temperature) / denominator])
+        )
+    }
+
+    createPickrateBasedTierWeight(heroName, tierWeight, temperature = defaultSoftmaxTemperature) {
+        const pickrateWeight = {}
+        const pickbasedTierWeight = {}
+        const denominator = this.heroData[heroName].reduce((sum, weight) => sum + Math.exp(weight.pickrate / temperature), 0)
+
+        for (const item of this.heroData[heroName]) {
+            pickrateWeight[item.tier] = Math.exp(item.pickrate / temperature) / denominator
+        }
+
+        const pickbasedWeights = this.heroData[heroName]?.map(item => ({
+            tier: item.tier,
+            weight: pickrateWeight[item.tier] * tierWeight[item.tier]
+        }))
+        const denominator_ = pickbasedWeights.reduce((sum, weight) => sum + Math.exp(weight.weight / temperature), 0)
+
+        for (const item of pickbasedWeights) {
+            pickbasedTierWeight[item.tier] = Math.exp(item.weight / temperature) / denominator_
+        }
+
+        return pickbasedTierWeight
+    }
+
+    getPickrateBasedTierWeight(heroName, tier) {
+        return this.pickrateBasedTierWeightCache[heroName]?.[tier] ?? 0
+    }
+
+    weightedMean(heroName, metric) {
+        let total = 0
+
+        for (const item of this.heroData[heroName] ?? []) {
+            const weight = this.getPickrateBasedTierWeight(heroName, item.tier)
+            total += item[metric] * weight
+        }
+
+        return total
+    }
+
+    weightedVariance(heroName, metric, mean = this.weightedMean(heroName, metric)) {
+        let total = 0
+
+        for (const item of this.heroData[heroName] ?? []) {
+            const weight = 1 / this.heroData[heroName].length
+            total += Math.pow(item[metric] - mean, 2) * weight
+        }
+
+        return total
+    }
+
+    weightedCovariance(heroName, metricA, metricB, meanA = this.weightedMean(heroName, metricA), meanB = this.weightedMean(heroName, metricB)) {
+        let total = 0
+
+        for (const item of this.heroData[heroName] ?? []) {
+            const weight = this.getPickrateBasedTierWeight(heroName, item.tier)
+            total += (item[metricA] - meanA) * (item[metricB] - meanB) * weight
+        }
+
+        return total
+    }
+
+    analyze(heroName) {
+        const meanWinrate = this.weightedMean(heroName, 'winrate')
+        const meanPickrate = this.weightedMean(heroName, 'pickrate')
+        const varianceWinrate = this.weightedVariance(heroName, 'winrate', meanWinrate)
+        const variancePickrate = this.weightedVariance(heroName, 'pickrate', meanPickrate)
+        const standardDeviationWinrate = Math.sqrt(varianceWinrate)
+        const standardDeviationPickrate = Math.sqrt(variancePickrate)
+        const covarianceWinratePickrate = this.weightedCovariance(heroName, 'winrate', 'pickrate', meanWinrate, meanPickrate)
+
+        return {
+            meanWinrate,
+            varianceWinrate,
+            standardDeviationWinrate,
+            meanPickrate,
+            variancePickrate,
+            standardDeviationPickrate,
+            covarianceWinratePickrate
+        }
+    }
+}
+
+function analyzeHeroData(allMap, specMap) {
+    const winrateVarianceDiffAbs = Math.abs(specMap.varianceWinrate - allMap.varianceWinrate)
+    const maxWinrateVarianceDiffAbs = Math.max(winrateVarianceDiffAbs, sourceStdDevDiffLogFloor)
+    const winrateStdDevDiff = Math.log2(maxWinrateVarianceDiffAbs)
+
+    return {
+        winrateStdDevDiff
+    }
+}
+
+function analyzeSourceData(source, weightMode, tierWeights, temperature) {
+    const allMapAnalyzer = new HeroStatsAnalyzer(source.allMaps.heroData, tierWeights, { weightMode, temperature })
+    const selectedMapAnalyzer = new HeroStatsAnalyzer(source.selectedMap.heroData, tierWeights, { weightMode, temperature })
+    const heroes = Object.keys(source.selectedMap.heroData).filter(heroName => source.allMaps.heroData[heroName])
+    const results = heroes.map(heroName => {
+        const allMap = allMapAnalyzer.analyze(heroName)
+        const specMap = selectedMapAnalyzer.analyze(heroName)
+        const result = {
+            hero: heroName,
+            allMap,
+            specMap,
+            winrateMeanDiff: specMap.meanWinrate - allMap.meanWinrate,
+            winrateVarianceDiff: specMap.varianceWinrate - allMap.varianceWinrate,
+            pickrateMeanDiff: specMap.meanPickrate - allMap.meanPickrate,
+            pickrateVarianceDiff: specMap.variancePickrate - allMap.variancePickrate,
+            covarianceDiff: specMap.covarianceWinratePickrate - allMap.covarianceWinratePickrate,
+            icon: source.selectedMap.heroIcons[heroName] ?? source.allMaps.heroIcons[heroName]
+        }
+
+        return {
+            ...result,
+            ...analyzeHeroData(allMap, specMap)
+        }
+    })
+
+    return {
+        map: source.map,
+        weightMode,
+        temperature,
+        tierWeights,
+        generatedAt: new Date().toISOString(),
+        heroes: results
+    }
 }
 
 async function loadMaps() {
@@ -231,11 +626,63 @@ function renderTable(heroes) {
     `).join('')
 }
 
-async function loadAnalysis() {
-    const map = mapSelect.value
+function renderCurrentAnalysis(options = {}) {
+    const { resetZoom = false } = options
     const weightMode = weightSelect.value
 
-    status.textContent = 'Analyzing...'
+    if (!analysisSource) {
+        return
+    }
+
+    if (!applyGlobalWeightBounds()) {
+        return
+    }
+
+    if (!syncTemperatureControls()) {
+        status.textContent = 'Invalid temperature'
+        return
+    }
+
+    const tierWeights = readTierWeights()
+    const temperature = readSoftmaxTemperature()
+
+    if (!tierWeights) {
+        status.textContent = 'Invalid weights'
+        return
+    }
+
+    if (!temperature) {
+        status.textContent = 'Invalid temperature'
+        return
+    }
+
+    if (resetZoom) {
+        resetZoomState()
+    }
+
+    const data = analyzeSourceData(analysisSource, weightMode, tierWeights, temperature)
+    renderChart(data.heroes)
+    renderTable(data.heroes)
+
+    status.textContent = `${data.heroes.length} heroes / ${data.weightMode} / temp ${formatNumber(data.temperature, 2)} / ${formatTierWeightSummary(data.tierWeights)}`
+    summary.textContent = `${data.map} 기준으로 현재 맵과 all-maps의 승률 평균 차이와 표준편차 차이 크기를 비교합니다.`
+}
+
+function queueAnalysisRender() {
+    if (renderFrame) {
+        return
+    }
+
+    renderFrame = requestAnimationFrame(() => {
+        renderFrame = null
+        renderCurrentAnalysis()
+    })
+}
+
+async function loadAnalysisSource() {
+    const map = mapSelect.value
+
+    status.textContent = 'Loading source data...'
     chart.innerHTML = ''
     plotLayer = null
     resetZoomState()
@@ -243,22 +690,22 @@ async function loadAnalysis() {
     hideTooltip()
 
     try {
-        const response = await fetch(`/api/analysis?map=${encodeURIComponent(map)}&weightMode=${encodeURIComponent(weightMode)}`)
+        const params = new URLSearchParams({
+            map
+        })
+        const response = await fetch(`/api/analysis-source?${params.toString()}`)
 
         if (!response.ok) {
-            throw new Error('Analysis request failed')
+            throw new Error('Source data request failed')
         }
 
-        const data = await response.json()
-        renderChart(data.heroes)
-        renderTable(data.heroes)
-
-        status.textContent = `${data.heroes.length} heroes / ${data.weightMode}`
-        summary.textContent = `${data.map} 기준으로 현재 맵과 all-maps의 승률 평균 차이와 표준편차 차이 크기를 비교합니다.`
+        analysisSource = await response.json()
+        sourceStdDevDiffLogFloor = analysisSource.stdDevDiffLogFloor ?? sourceStdDevDiffLogFloor
+        renderCurrentAnalysis({ resetZoom: true })
     } catch (error) {
         console.error(error)
         status.textContent = 'Failed'
-        chart.innerHTML = '<div class="empty-state">분석 데이터를 불러오지 못했습니다.</div>'
+        chart.innerHTML = '<div class="empty-state">원본 데이터를 불러오지 못했습니다.</div>'
     }
 }
 
@@ -311,10 +758,69 @@ function handleChartWheel(event) {
 
 async function init() {
     await loadMaps()
-    await loadAnalysis()
+    applyGlobalWeightBounds()
+    await loadAnalysisSource()
 
-    mapSelect.addEventListener('change', loadAnalysis)
-    weightSelect.addEventListener('change', loadAnalysis)
+    mapSelect.addEventListener('change', loadAnalysisSource)
+    weightSelect.addEventListener('change', queueAnalysisRender)
+    tierWeightModeSelect.addEventListener('change', () => {
+        if (applyTierWeightMode()) {
+            queueAnalysisRender()
+        }
+    })
+    tierWeightForm.addEventListener('submit', event => {
+        event.preventDefault()
+        queueAnalysisRender()
+    })
+    tierWeightInputs.forEach(input => input.addEventListener('input', event => {
+        const tier = event.target.dataset.tierWeight
+        tierWeightModeSelect.value = 'custom'
+        tierWeightValueByTier[tier].value = event.target.value
+        queueAnalysisRender()
+    }))
+    tierWeightValueInputs.forEach(input => input.addEventListener('input', event => {
+        const tier = event.target.dataset.tierValue
+
+        if (event.target.checkValidity() && event.target.value.trim()) {
+            tierWeightModeSelect.value = 'custom'
+            tierWeightSliderByTier[tier].value = event.target.value
+            queueAnalysisRender()
+        } else {
+            status.textContent = 'Invalid weights'
+        }
+    }))
+    globalWeightMinInput.addEventListener('input', () => {
+        if (applyGlobalWeightBounds()) {
+            queueAnalysisRender()
+        }
+    })
+    globalWeightMaxInput.addEventListener('input', () => {
+        if (applyGlobalWeightBounds()) {
+            queueAnalysisRender()
+        }
+    })
+    temperatureSlider.addEventListener('input', event => {
+        temperatureInput.value = event.target.value
+        queueAnalysisRender()
+    })
+    temperatureInput.addEventListener('input', event => {
+        if (event.target.checkValidity() && event.target.value.trim()) {
+            temperatureSlider.value = event.target.value
+            queueAnalysisRender()
+        } else {
+            status.textContent = 'Invalid temperature'
+        }
+    })
+    resetTierWeightsButton.addEventListener('click', () => {
+        globalWeightMinInput.value = defaultWeightBounds.min
+        globalWeightMaxInput.value = defaultWeightBounds.max
+        tierWeightModeSelect.value = 'linear'
+        resetTierWeights()
+        temperatureInput.value = defaultSoftmaxTemperature
+        temperatureSlider.value = defaultSoftmaxTemperature
+        applyGlobalWeightBounds()
+        queueAnalysisRender()
+    })
     zoomInButton.addEventListener('click', () => zoomChart(zoomStep))
     zoomOutButton.addEventListener('click', () => zoomChart(1 / zoomStep))
     zoomResetButton.addEventListener('click', resetZoomState)

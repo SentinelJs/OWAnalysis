@@ -13,22 +13,6 @@
                 <h1>OWAnalysis</h1>
                 <p id="summary">Select a map to compare hero winrate statistics against all maps.</p>
             </div>
-
-            <div class="controls">
-                <label>
-                    <span>Map</span>
-                    <select id="mapSelect"></select>
-                </label>
-
-                <label>
-                    <span>Weight</span>
-                    <select id="weightSelect">
-                        <option value="softmax">Softmax</option>
-                        <option value="raw">Raw</option>
-                        <option value="none">None</option>
-                    </select>
-                </label>
-            </div>
         </section>
 
         <section class="chart-section" aria-label="winrate diff scatter plot">
@@ -47,29 +31,127 @@
                 </div>
             </div>
 
-            <div class="chart-wrap">
-                <div class="axis-label x-label">winrate mean diff</div>
-                <div class="axis-label y-label">log2 abs winrate standard deviation diff</div>
-                <div id="chart" class="chart" role="img" aria-label="Hero icon scatter plot"></div>
-            </div>
+            <div class="analysis-workspace">
+                <div class="chart-main">
+                    <div class="chart-wrap">
+                        <div class="axis-label x-label">winrate mean diff</div>
+                        <div class="axis-label y-label">log2 abs winrate standard deviation diff</div>
+                        <div id="chart" class="chart" role="img" aria-label="Hero icon scatter plot"></div>
+                    </div>
 
-            <div class="quadrant-guide" aria-label="quadrant interpretation">
-                <div>
-                    <strong>오른쪽 위</strong>
-                    <span>승률이 좋고 숙련도 영향도 큼. 고점은 있으나 조건을 타는 픽.</span>
+                    <div class="quadrant-guide" aria-label="quadrant interpretation">
+                        <div>
+                            <strong>오른쪽 위</strong>
+                            <span>승률이 좋고 숙련도 영향도 큼. 고점은 있으나 조건을 타는 픽.</span>
+                        </div>
+                        <div>
+                            <strong>오른쪽 아래</strong>
+                            <span>승률이 좋고 숙련도 영향은 작음. 이 맵에서 안정적으로 좋은 픽.</span>
+                        </div>
+                        <div>
+                            <strong>왼쪽 위</strong>
+                            <span>승률은 낮지만 숙련도 영향은 큼. 특정 조건에서만 살아나는 픽.</span>
+                        </div>
+                        <div>
+                            <strong>왼쪽 아래</strong>
+                            <span>승률이 낮고 숙련도 영향도 작음. 전반적으로 힘을 못 받는 맵 약세 픽.</span>
+                        </div>
+                    </div>
                 </div>
-                <div>
-                    <strong>오른쪽 아래</strong>
-                    <span>승률이 좋고 숙련도 영향은 작음. 이 맵에서 안정적으로 좋은 픽.</span>
-                </div>
-                <div>
-                    <strong>왼쪽 위</strong>
-                    <span>승률은 낮지만 숙련도 영향은 큼. 특정 조건에서만 살아나는 픽.</span>
-                </div>
-                <div>
-                    <strong>왼쪽 아래</strong>
-                    <span>승률이 낮고 숙련도 영향도 작음. 전반적으로 힘을 못 받는 맵 약세 픽.</span>
-                </div>
+
+                <aside class="control-stack" aria-label="analysis controls">
+                    <div class="controls">
+                        <label>
+                            <span>Map</span>
+                            <select id="mapSelect"></select>
+                        </label>
+
+                        <label>
+                            <span>Weight</span>
+                            <select id="weightSelect">
+                                <option value="softmax">Softmax</option>
+                                <option value="raw">Raw</option>
+                                <option value="none">None</option>
+                            </select>
+                        </label>
+
+                        <label class="temperature-control">
+                            <span>Temperature</span>
+                            <div class="inline-range-control">
+                                <input id="temperatureSlider" type="range" value="1" min="0.01" max="20" step="any">
+                                <input id="temperatureInput" type="number" value="1" min="0.01" max="20" step="any" required>
+                            </div>
+                        </label>
+                    </div>
+
+                    <form id="tierWeightForm" class="tier-weight-panel" aria-label="tier weight controls">
+                        <div class="tier-weight-header">
+                            <span>Tier Weight</span>
+                            <div class="tier-weight-actions">
+                                <label class="range-bound-control">
+                                    <span>Min</span>
+                                    <input id="globalWeightMin" type="number" value="11" min="-100" max="100" step="any" required>
+                                </label>
+                                <label class="range-bound-control">
+                                    <span>Max</span>
+                                    <input id="globalWeightMax" type="number" value="17" min="-100" max="100" step="any" required>
+                                </label>
+                                <label class="tier-mode-control">
+                                    <span>Mode</span>
+                                    <select id="tierWeightMode">
+                                        <option value="custom">Custom</option>
+                                        <option value="linear" selected>Linear</option>
+                                        <option value="reverse-linear">Reverse Linear</option>
+                                        <option value="exp">Exp</option>
+                                        <option value="reverse-exp">Reverse Exp</option>
+                                        <option value="log">Log</option>
+                                        <option value="reverse-log">Reverse Log</option>
+                                        <option value="uniform">Uniform</option>
+                                    </select>
+                                </label>
+                                <button type="button" id="resetTierWeights">Reset</button>
+                            </div>
+                        </div>
+
+                        <div class="tier-slider-list">
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Bronze</span>
+                                <input type="range" data-tier-weight="Bronze" value="11" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Bronze" value="11" min="11" max="17" step="any" required aria-label="Bronze weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Silver</span>
+                                <input type="range" data-tier-weight="Silver" value="12" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Silver" value="12" min="11" max="17" step="any" required aria-label="Silver weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Gold</span>
+                                <input type="range" data-tier-weight="Gold" value="13" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Gold" value="13" min="11" max="17" step="any" required aria-label="Gold weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Platinum</span>
+                                <input type="range" data-tier-weight="Platinum" value="14" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Platinum" value="14" min="11" max="17" step="any" required aria-label="Platinum weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Diamond</span>
+                                <input type="range" data-tier-weight="Diamond" value="15" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Diamond" value="15" min="11" max="17" step="any" required aria-label="Diamond weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Master</span>
+                                <input type="range" data-tier-weight="Master" value="16" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Master" value="16" min="11" max="17" step="any" required aria-label="Master weight">
+                            </label>
+                            <label class="tier-slider-row">
+                                <span class="tier-name">Grandmaster</span>
+                                <input type="range" data-tier-weight="Grandmaster" value="17" min="11" max="17" step="any">
+                                <input type="number" data-tier-value="Grandmaster" value="17" min="11" max="17" step="any" required aria-label="Grandmaster weight">
+                            </label>
+                        </div>
+                    </form>
+                </aside>
             </div>
         </section>
 

@@ -25,6 +25,11 @@ const tierWeight = {
     Master: 16,
     Grandmaster: 17
 }
+const minTierWeight = -100
+const maxTierWeight = 100
+const defaultSoftmaxTemperature = 1
+const minSoftmaxTemperature = 0.01
+const maxSoftmaxTemperature = 20
 const stdDevDiffLogFloor = 0.001
 
 const baseURL = 'https://overwatch.blizzard.com/ko-kr/rates/data/?'
@@ -51,14 +56,66 @@ function generateURL(params) {
     return `${baseURL}${searchParams.toString()}`
 }
 
+function serializeTierWeight(weights) {
+    return tierName.map(tier => `${tier}:${weights[tier]}`).join('|')
+}
+
+function parseTierWeightParam(value) {
+    if (!value) {
+        return { ...tierWeight }
+    }
+
+    let parsed
+
+    try {
+        parsed = JSON.parse(value)
+    } catch {
+        throw new Error('Invalid tier weights')
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Invalid tier weights')
+    }
+
+    return Object.fromEntries(tierName.map(tier => {
+        const weight = Number(parsed[tier] ?? tierWeight[tier])
+
+        if (!Number.isFinite(weight) || weight < minTierWeight || weight > maxTierWeight) {
+            throw new Error('Invalid tier weights')
+        }
+
+        return [tier, weight]
+    }))
+}
+
+function parseTemperatureParam(value) {
+    if (!value) {
+        return defaultSoftmaxTemperature
+    }
+
+    const temperature = Number(value)
+
+    if (!Number.isFinite(temperature) || temperature < minSoftmaxTemperature || temperature > maxSoftmaxTemperature) {
+        throw new Error('Invalid temperature')
+    }
+
+    return temperature
+}
+
 class HeroStatsAnalyzer {
     constructor(heroData, tierWeight, options = {}) {
         this.heroData = heroData
         this.weightMode = options.weightMode ?? 'softmax'
-        this.tierWeight = HeroStatsAnalyzer.createTierWeight(tierWeight, this.weightMode)
+        this.temperature = options.temperature ?? defaultSoftmaxTemperature
+        this.tierWeight = HeroStatsAnalyzer.createTierWeight(tierWeight, this.weightMode, this.temperature)
+        this.pickrateBasedTierWeightCache = {}
+
+        for (const heroName in heroData) {
+            this.pickrateBasedTierWeightCache[heroName] = this.createPickrateBasedTierWeight(heroName, tierWeight, this.temperature)
+        }
     }
 
-    static createTierWeight(tierWeight, weightMode) {
+    static createTierWeight(tierWeight, weightMode, temperature = defaultSoftmaxTemperature) {
         if (weightMode === 'none') {
             return Object.fromEntries(Object.keys(tierWeight).map(tier => [tier, 1]))
         }
@@ -67,21 +124,50 @@ class HeroStatsAnalyzer {
             return { ...tierWeight }
         }
 
-        const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + Math.exp(weight), 0)
+        const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + Math.exp(weight / temperature), 0)
         return Object.fromEntries(
-            Object.entries(tierWeight).map(([tier, weight]) => [tier, Math.exp(weight) / denominator])
+            Object.entries(tierWeight).map(([tier, weight]) => [tier, Math.exp(weight / temperature) / denominator])
         )
+    }
+
+    createPickrateBasedTierWeight(heroName, tierWeight, temperature = defaultSoftmaxTemperature) {
+        let pickrateWeight = {}
+        let pickbasedTierWeight = {}
+
+        const denominator = this.heroData[heroName].reduce((sum, weight) => sum + Math.exp(weight.pickrate / temperature), 0)
+        for (const item of this.heroData[heroName]) {
+            pickrateWeight[item.tier] = Math.exp(item.pickrate / temperature) / denominator
+        }
+
+        const pickbasedWeights = this.heroData[heroName]?.map(item => {
+            return { 
+                tier: item.tier,
+                weight: pickrateWeight[item.tier] * tierWeight[item.tier] // --- 픽률 기반 가중치 계산 ---
+            }
+        })
+
+        // softmax 계산
+        const denominator_ = pickbasedWeights.reduce((sum, weight) => sum + Math.exp(weight.weight / temperature), 0)
+        for (const item of pickbasedWeights) {
+            pickbasedTierWeight[item.tier] = Math.exp(item.weight / temperature) / denominator_
+        }
+
+        return pickbasedTierWeight
     }
 
     getTierWeight(tier) {
         return this.tierWeight[tier] ?? 0
     }
 
+    getPickrateBasedTierWeight(heroName, tier) {
+        return this.pickrateBasedTierWeightCache[heroName]?.[tier] ?? 0
+    }
+
     weightedMean(heroName, metric) {
         let total = 0
 
         for (const item of this.heroData[heroName] ?? []) {
-            const weight = this.getTierWeight(item.tier)
+            const weight = this.getPickrateBasedTierWeight(heroName, item.tier)
             total += item[metric] * weight
         }
 
@@ -104,7 +190,7 @@ class HeroStatsAnalyzer {
         let total = 0
 
         for (const item of this.heroData[heroName] ?? []) {
-            const weight = this.getTierWeight(item.tier)
+            const weight = this.getPickrateBasedTierWeight(heroName, item.tier)
             total += (item[metricA] - meanA) * (item[metricB] - meanB) * weight
         }
 
@@ -174,22 +260,80 @@ async function collectHeroData(map) {
     return { heroData, heroIcons }
 }
 
-async function getAnalysis(map, weightMode) {
-    const cacheKey = `${map}:${weightMode}`
+async function collectHeroDataCached(map) {
+    const cacheKey = `hero-data:${map}`
+
+    if (cache.has(cacheKey)) {
+        return cache.get(cacheKey)
+    }
+
+    const data = await collectHeroData(map)
+    cache.set(cacheKey, data)
+    return data
+}
+
+async function getAnalysisSourceData(map) {
+    const cacheKey = `analysis-source:${map}`
+
     if (cache.has(cacheKey)) {
         return cache.get(cacheKey)
     }
 
     const [allMaps, selectedMap] = await Promise.all([
-        collectHeroData(allMapName),
-        collectHeroData(map)
+        collectHeroDataCached(allMapName),
+        collectHeroDataCached(map)
     ])
+    const payload = {
+        map,
+        allMapName,
+        tiers: tierName,
+        defaultTierWeights: tierWeight,
+        weightBounds: {
+            min: minTierWeight,
+            max: maxTierWeight
+        },
+        defaultSoftmaxTemperature,
+        temperatureBounds: {
+            min: minSoftmaxTemperature,
+            max: maxSoftmaxTemperature
+        },
+        stdDevDiffLogFloor,
+        allMaps,
+        selectedMap,
+        generatedAt: new Date().toISOString()
+    }
+
+    cache.set(cacheKey, payload)
+    return payload
+}
+
+function analyzeHeroData(allMap, specMap) {
+    // 분산 차 계산
+    // log2(|분산A - 분산B|)
+
+    const winrateVarianceDiffAbs = Math.abs(specMap.varianceWinrate - allMap.varianceWinrate)
+    const maxWinrateVarianceDiffAbs = Math.max(winrateVarianceDiffAbs, stdDevDiffLogFloor)
+    const winrateStdDevDiff = Math.log2(maxWinrateVarianceDiffAbs)
+
+    return {
+        winrateStdDevDiff
+    }
+}
+
+
+async function getAnalysis(map, weightMode, selectedTierWeight, temperature) {
+    const cacheKey = `${map}:${weightMode}:${temperature}:${serializeTierWeight(selectedTierWeight)}`
+    if (cache.has(cacheKey)) {
+        return cache.get(cacheKey)
+    }
+
+    const { allMaps, selectedMap } = await getAnalysisSourceData(map)
 
     // console.log(allMaps.heroData['아나'], selectedMap.heroData['아나']) // --- DEBUG LOG ---
     // console.log(allMapName, map) // --- DEBUG LOG ---
 
-    const allMapAnalyzer = new HeroStatsAnalyzer(allMaps.heroData, tierWeight, { weightMode })
-    const selectedMapAnalyzer = new HeroStatsAnalyzer(selectedMap.heroData, tierWeight, { weightMode })
+    const allMapAnalyzer = new HeroStatsAnalyzer(allMaps.heroData, selectedTierWeight, { weightMode, temperature })
+    const selectedMapAnalyzer = new HeroStatsAnalyzer(selectedMap.heroData, selectedTierWeight, { weightMode, temperature })
     const heroes = Object.keys(selectedMap.heroData).filter(heroName => allMaps.heroData[heroName])
 
     const results = heroes.map(heroName => {
@@ -198,24 +342,31 @@ async function getAnalysis(map, weightMode) {
         const winrateStdDevDiffAbs = Math.abs(specMap.standardDeviationWinrate - allMap.standardDeviationWinrate)
         const pickrateStdDevDiffAbs = Math.abs(specMap.standardDeviationPickrate - allMap.standardDeviationPickrate)
 
-        return {
+        let rt_result = {
             hero: heroName,
             allMap,
             specMap,
             winrateMeanDiff: specMap.meanWinrate - allMap.meanWinrate,
             winrateVarianceDiff: specMap.varianceWinrate - allMap.varianceWinrate,
-            winrateStdDevDiff: Math.log2(Math.max(winrateStdDevDiffAbs, stdDevDiffLogFloor)),
             pickrateMeanDiff: specMap.meanPickrate - allMap.meanPickrate,
             pickrateVarianceDiff: specMap.variancePickrate - allMap.variancePickrate,
-            pickrateStdDevDiff: Math.log2(Math.max(pickrateStdDevDiffAbs, stdDevDiffLogFloor)),
             covarianceDiff: specMap.covarianceWinratePickrate - allMap.covarianceWinratePickrate,
             icon: selectedMap.heroIcons[heroName] ?? allMaps.heroIcons[heroName]
+        }
+
+        let analysisResult = analyzeHeroData(allMap, specMap)
+
+        return {
+            ...rt_result,
+            ...analysisResult
         }
     })
 
     const payload = {
         map,
         weightMode,
+        temperature,
+        tierWeights: selectedTierWeight,
         generatedAt: new Date().toISOString(),
         heroes: results
     }
@@ -269,10 +420,33 @@ const server = http.createServer(async (request, response) => {
             return
         }
 
+        if (url.pathname === '/api/analysis-source') {
+            const map = url.searchParams.get('map') ?? 'numbani'
+            const validMaps = mapName.flat()
+
+            if (!validMaps.includes(map)) {
+                sendJson(response, 400, { error: 'Unknown map' })
+                return
+            }
+
+            sendJson(response, 200, await getAnalysisSourceData(map))
+            return
+        }
+
         if (url.pathname === '/api/analysis') {
             const map = url.searchParams.get('map') ?? 'numbani'
             const weightMode = url.searchParams.get('weightMode') ?? 'softmax'
             const validMaps = mapName.flat()
+            let selectedTierWeight
+            let temperature
+
+            try {
+                selectedTierWeight = parseTierWeightParam(url.searchParams.get('tierWeights'))
+                temperature = parseTemperatureParam(url.searchParams.get('temperature'))
+            } catch {
+                sendJson(response, 400, { error: 'Invalid tier weights or temperature' })
+                return
+            }
 
             if (!validMaps.includes(map)) {
                 sendJson(response, 400, { error: 'Unknown map' })
@@ -284,7 +458,7 @@ const server = http.createServer(async (request, response) => {
                 return
             }
 
-            sendJson(response, 200, await getAnalysis(map, weightMode))
+            sendJson(response, 200, await getAnalysis(map, weightMode, selectedTierWeight, temperature))
             return
         }
 

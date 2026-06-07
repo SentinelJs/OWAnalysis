@@ -30,11 +30,7 @@ body {
 }
 
 .toolbar {
-    display: flex;
-    align-items: end;
-    justify-content: space-between;
-    gap: 24px;
-    padding: 0 0 18px;
+    padding: 0 0 14px;
 }
 
 .title-group h1,
@@ -56,9 +52,20 @@ body {
 }
 
 .controls {
-    display: flex;
+    display: grid;
     gap: 12px;
-    align-items: center;
+}
+
+.control-stack {
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    min-width: 0;
+    max-height: calc(100vh - 132px);
+    overflow: auto;
+    padding: 16px;
+    border-left: 1px solid var(--line);
+    background: #171b20;
 }
 
 label {
@@ -69,7 +76,8 @@ label {
 }
 
 select {
-    min-width: 178px;
+    width: 100%;
+    min-width: 0;
     height: 38px;
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -79,11 +87,142 @@ select {
     font-size: 14px;
 }
 
+.temperature-control {
+    min-width: 0;
+}
+
+.inline-range-control {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) 76px;
+    align-items: center;
+    gap: 8px;
+}
+
+.tier-weight-panel {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #171b20;
+}
+
+.tier-weight-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.tier-weight-actions {
+    display: flex;
+    align-items: end;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.tier-weight-actions button {
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    padding: 0 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.tier-weight-actions button:hover,
+.tier-weight-actions button:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.range-bound-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.range-bound-control span {
+    line-height: 30px;
+}
+
+.range-bound-control input {
+    width: 72px;
+    height: 30px;
+}
+
+.tier-mode-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tier-mode-control select {
+    width: 136px;
+    height: 30px;
+    min-width: 0;
+}
+
+.tier-slider-list {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px 12px;
+}
+
+.tier-slider-row {
+    display: grid;
+    grid-template-columns: 92px minmax(140px, 1fr) 76px;
+    align-items: center;
+    gap: 10px;
+}
+
+.tier-name {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 620;
+}
+
+input[type="number"] {
+    width: 100%;
+    height: 34px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    padding: 0 8px;
+    font-size: 13px;
+}
+
+input[type="number"]:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+}
+
 .chart-section,
 .table-section {
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--panel);
+}
+
+.analysis-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+    align-items: stretch;
+}
+
+.chart-main {
+    min-width: 0;
 }
 
 .chart-header {
@@ -151,8 +290,8 @@ select {
 .chart {
     position: relative;
     width: 100%;
-    height: min(68vh, 720px);
-    min-height: 520px;
+    height: clamp(420px, calc(100vh - 250px), 720px);
+    min-height: 0;
     overflow: hidden;
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -418,7 +557,6 @@ tr:last-child td {
         padding-top: 14px;
     }
 
-    .toolbar,
     .chart-header {
         align-items: stretch;
         flex-direction: column;
@@ -429,13 +567,42 @@ tr:last-child td {
         justify-content: space-between;
     }
 
-    .controls {
-        display: grid;
+    .analysis-workspace {
         grid-template-columns: 1fr;
+    }
+
+    .control-stack {
+        max-height: none;
+        border-top: 1px solid var(--line);
+        border-left: 0;
     }
 
     select {
         width: 100%;
+    }
+
+    .tier-weight-header {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .tier-weight-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .tier-weight-actions button {
+        grid-column: 1 / -1;
+    }
+
+    .tier-slider-row {
+        grid-template-columns: 1fr 74px;
+        gap: 8px;
+    }
+
+    .tier-slider-row input[type="range"] {
+        grid-column: 1 / -1;
+        grid-row: 2;
     }
 
     .chart-wrap {
