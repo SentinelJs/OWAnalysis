@@ -21,6 +21,7 @@ const zoomResetButton = document.querySelector('#zoomReset')
 const zoomStep = 1.35
 const minZoom = 1
 const maxZoom = 10
+const jensenShannonLogEpsilon = 1e-6
 const defaultTierWeights = Object.fromEntries(
     tierWeightInputs.map(input => [input.dataset.tierWeight, Number(input.defaultValue)])
 )
@@ -44,7 +45,6 @@ const zoomState = {
 let plotLayer = null
 let panStart = null
 let analysisSource = null
-let sourceStdDevDiffLogFloor = 0.001
 let renderFrame = null
 
 function formatNumber(value, digits = 3) {
@@ -352,26 +352,28 @@ class HeroStatsAnalyzer {
         this.weightMode = options.weightMode ?? 'softmax'
         this.temperature = options.temperature ?? defaultSoftmaxTemperature
         this.tierWeight = HeroStatsAnalyzer.createTierWeight(tierWeight, this.weightMode, this.temperature)
+
         this.pickrateBasedTierWeightCache = {}
 
         for (const heroName in heroData) {
-            this.pickrateBasedTierWeightCache[heroName] = this.createPickrateBasedTierWeight(heroName, tierWeight, this.temperature)
+            this.pickrateBasedTierWeightCache[heroName] = this.createPickrateBasedTierWeight(heroName, this.tierWeight, this.temperature)
         }
     }
 
     static createTierWeight(tierWeight, weightMode, temperature = defaultSoftmaxTemperature) {
         if (weightMode === 'none') {
             return Object.fromEntries(Object.keys(tierWeight).map(tier => [tier, 1]))
+        } else if (weightMode === 'raw') {
+            const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + weight, 0)
+            return Object.fromEntries(
+                Object.entries(tierWeight).map(([tier, weight]) => [tier, weight / denominator])
+            )
+        } else {
+            const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + Math.exp(weight / temperature), 0)
+            return Object.fromEntries(
+                Object.entries(tierWeight).map(([tier, weight]) => [tier, Math.exp(weight / temperature) / denominator])
+            )
         }
-
-        if (weightMode === 'raw') {
-            return { ...tierWeight }
-        }
-
-        const denominator = Object.values(tierWeight).reduce((sum, weight) => sum + Math.exp(weight / temperature), 0)
-        return Object.fromEntries(
-            Object.entries(tierWeight).map(([tier, weight]) => [tier, Math.exp(weight / temperature) / denominator])
-        )
     }
 
     createPickrateBasedTierWeight(heroName, tierWeight, temperature = defaultSoftmaxTemperature) {
@@ -387,10 +389,10 @@ class HeroStatsAnalyzer {
             tier: item.tier,
             weight: pickrateWeight[item.tier] * tierWeight[item.tier]
         }))
-        const denominator_ = pickbasedWeights.reduce((sum, weight) => sum + Math.exp(weight.weight / temperature), 0)
+        const denominator_ = pickbasedWeights.reduce((sum, weight) => sum + weight.weight, 0)
 
         for (const item of pickbasedWeights) {
-            pickbasedTierWeight[item.tier] = Math.exp(item.weight / temperature) / denominator_
+            pickbasedTierWeight[item.tier] = item.weight / denominator_
         }
 
         return pickbasedTierWeight
@@ -433,6 +435,26 @@ class HeroStatsAnalyzer {
         return total
     }
 
+    metricDistribution(heroName, metric) {
+        const values = (this.heroData[heroName] ?? []).map(item => ({
+            tier: item.tier,
+            value: Math.max(Number(item[metric]) || 0, 0) * this.getPickrateBasedTierWeight(heroName, item.tier)
+        }))
+
+        if (!values.length) {
+            return {}
+        }
+
+        const total = values.reduce((sum, item) => sum + item.value, 0)
+
+        if (total <= 0) {
+            const uniformWeight = 1 / values.length
+            return Object.fromEntries(values.map(item => [item.tier, uniformWeight]))
+        }
+
+        return Object.fromEntries(values.map(item => [item.tier, item.value / total]))
+    }
+
     analyze(heroName) {
         const meanWinrate = this.weightedMean(heroName, 'winrate')
         const meanPickrate = this.weightedMean(heroName, 'pickrate')
@@ -441,6 +463,7 @@ class HeroStatsAnalyzer {
         const standardDeviationWinrate = Math.sqrt(varianceWinrate)
         const standardDeviationPickrate = Math.sqrt(variancePickrate)
         const covarianceWinratePickrate = this.weightedCovariance(heroName, 'winrate', 'pickrate', meanWinrate, meanPickrate)
+        const winrateDistribution = this.metricDistribution(heroName, 'winrate')
 
         return {
             meanWinrate,
@@ -449,26 +472,84 @@ class HeroStatsAnalyzer {
             meanPickrate,
             variancePickrate,
             standardDeviationPickrate,
-            covarianceWinratePickrate
+            covarianceWinratePickrate,
+            winrateDistribution
         }
     }
 }
 
+function klDivergence(distributionA, distributionB) {
+    let total = 0
+    const keys = new Set([...Object.keys(distributionA ?? {}), ...Object.keys(distributionB ?? {})])
+
+    for (const key of keys) {
+        const valueA = distributionA[key] ?? 0
+        const valueB = distributionB[key] ?? 0
+
+        if (valueA > 0 && valueB > 0) {
+            total += valueA * Math.log2(valueA / valueB)
+        }
+    }
+
+    return total
+}
+
+function jensenShannonDivergence(distributionA, distributionB) {
+    const keys = new Set([...Object.keys(distributionA ?? {}), ...Object.keys(distributionB ?? {})])
+
+    if (!keys.size) {
+        return 0
+    }
+
+    const midpoint = {}
+
+    for (const key of keys) {
+        midpoint[key] = ((distributionA[key] ?? 0) + (distributionB[key] ?? 0)) / 2
+    }
+
+    return (klDivergence(distributionA, midpoint) + klDivergence(distributionB, midpoint)) / 2
+}
+
 function analyzeHeroData(allMap, specMap) {
-    const winrateVarianceDiffAbs = Math.abs(specMap.varianceWinrate - allMap.varianceWinrate)
-    const maxWinrateVarianceDiffAbs = Math.max(winrateVarianceDiffAbs, sourceStdDevDiffLogFloor)
-    const winrateStdDevDiff = Math.log2(maxWinrateVarianceDiffAbs)
+    const winrateJensenShannonDivergence = jensenShannonDivergence(specMap.winrateDistribution, allMap.winrateDistribution)
 
     return {
-        winrateStdDevDiff
+        winrateJensenShannonDivergence
     }
+}
+
+function centerLogWinrateJensenShannonDivergence(results) {
+    const logValues = results
+        .map(hero => Math.log2(Math.max(hero.winrateJensenShannonDivergence, 0) + jensenShannonLogEpsilon))
+        .filter(Number.isFinite)
+
+    if (!logValues.length) {
+        return results.map(hero => ({
+            ...hero,
+            winrateJensenShannonDivergenceLog: 0,
+            winrateJensenShannonDivergenceCenteredLog: 0
+        }))
+    }
+
+    const meanLog = logValues.reduce((sum, value) => sum + value, 0) / logValues.length
+
+    return results.map(hero => {
+        const logValue = Math.log2(Math.max(hero.winrateJensenShannonDivergence, 0) + jensenShannonLogEpsilon)
+        const finiteLogValue = Number.isFinite(logValue) ? logValue : meanLog
+
+        return {
+            ...hero,
+            winrateJensenShannonDivergenceLog: finiteLogValue,
+            winrateJensenShannonDivergenceCenteredLog: finiteLogValue - meanLog
+        }
+    })
 }
 
 function analyzeSourceData(source, weightMode, tierWeights, temperature) {
     const allMapAnalyzer = new HeroStatsAnalyzer(source.allMaps.heroData, tierWeights, { weightMode, temperature })
     const selectedMapAnalyzer = new HeroStatsAnalyzer(source.selectedMap.heroData, tierWeights, { weightMode, temperature })
     const heroes = Object.keys(source.selectedMap.heroData).filter(heroName => source.allMaps.heroData[heroName])
-    const results = heroes.map(heroName => {
+    const results = centerLogWinrateJensenShannonDivergence(heroes.map(heroName => {
         const allMap = allMapAnalyzer.analyze(heroName)
         const specMap = selectedMapAnalyzer.analyze(heroName)
         const result = {
@@ -487,7 +568,7 @@ function analyzeSourceData(source, weightMode, tierWeights, temperature) {
             ...result,
             ...analyzeHeroData(allMap, specMap)
         }
-    })
+    }))
 
     return {
         map: source.map,
@@ -521,8 +602,9 @@ function renderTooltip(event, hero) {
     tooltip.innerHTML = `
         <strong>${hero.hero}</strong>
         <span>mean diff: ${formatNumber(hero.winrateMeanDiff)}</span>
-        <span>log2 abs std diff: ${formatNumber(hero.winrateStdDevDiff)}</span>
-        <span>variance diff: ${formatNumber(hero.winrateVarianceDiff)}</span>
+        <span>centered log JSD: ${formatNumber(hero.winrateJensenShannonDivergenceCenteredLog)}</span>
+        <span>log JSD: ${formatNumber(hero.winrateJensenShannonDivergenceLog)}</span>
+        <span>winrate JSD: ${formatNumber(hero.winrateJensenShannonDivergence, 6)}</span>
         <span>pick mean diff: ${formatNumber(hero.pickrateMeanDiff)}</span>
         <span>cov diff: ${formatNumber(hero.covarianceDiff)}</span>
     `
@@ -538,8 +620,8 @@ function renderAxisDirectionLabels(targetLayer) {
     const labels = [
         ['axis-direction x-negative', '승률 ↓', 'top', yAxisPercent],
         ['axis-direction x-positive', '승률 ↑', 'top', yAxisPercent],
-        ['axis-direction y-positive', '숙련도 영향 ↑', 'left', xAxisPercent],
-        ['axis-direction y-negative', '숙련도 영향 ↓', 'left', xAxisPercent]
+        ['axis-direction y-positive', 'log JSD ↑', 'left', xAxisPercent],
+        ['axis-direction y-negative', 'log JSD ↓', 'left', xAxisPercent]
     ]
 
     for (const [className, text, positionProp, positionValue] of labels) {
@@ -577,7 +659,7 @@ function renderPlotAxes(targetLayer, xDomain, yDomain) {
 
 function renderChart(heroes) {
     const xDomain = normalizeDataDomain(heroes.map(hero => hero.winrateMeanDiff))
-    const yDomain = normalizeDataDomain(heroes.map(hero => hero.winrateStdDevDiff))
+    const yDomain = normalizeDataDomain(heroes.map(hero => hero.winrateJensenShannonDivergenceCenteredLog))
 
     chart.innerHTML = ''
     plotLayer = document.createElement('div')
@@ -594,7 +676,7 @@ function renderChart(heroes) {
         image.title = hero.hero
         image.tabIndex = 0
         image.style.left = `${scale(hero.winrateMeanDiff, xDomain)}%`
-        image.style.top = `${scale(hero.winrateStdDevDiff, yDomain, true)}%`
+        image.style.top = `${scale(hero.winrateJensenShannonDivergenceCenteredLog, yDomain, true)}%`
 
         image.addEventListener('mousemove', event => renderTooltip(event, hero))
         image.addEventListener('mouseleave', hideTooltip)
@@ -619,7 +701,7 @@ function renderTable(heroes) {
                 </div>
             </td>
             <td class="${classForValue(hero.winrateMeanDiff)}">${formatNumber(hero.winrateMeanDiff)}</td>
-            <td class="${classForValue(hero.winrateVarianceDiff)}">${formatNumber(hero.winrateVarianceDiff)}</td>
+            <td class="${classForValue(hero.winrateJensenShannonDivergenceCenteredLog)}">${formatNumber(hero.winrateJensenShannonDivergenceCenteredLog)}</td>
             <td class="${classForValue(hero.pickrateMeanDiff)}">${formatNumber(hero.pickrateMeanDiff)}</td>
             <td class="${classForValue(hero.covarianceDiff)}">${formatNumber(hero.covarianceDiff)}</td>
         </tr>
@@ -665,7 +747,7 @@ function renderCurrentAnalysis(options = {}) {
     renderTable(data.heroes)
 
     status.textContent = `${data.heroes.length} heroes / ${data.weightMode} / temp ${formatNumber(data.temperature, 2)} / ${formatTierWeightSummary(data.tierWeights)}`
-    summary.textContent = `${data.map} 기준으로 현재 맵과 all-maps의 승률 평균 차이와 표준편차 차이 크기를 비교합니다.`
+    summary.textContent = `${data.map} 기준으로 현재 맵과 all-maps의 승률 평균 차이와 평균 중심 로그 JSD 기반 티어별 승률 분포 차이를 비교합니다.`
 }
 
 function queueAnalysisRender() {
@@ -700,7 +782,6 @@ async function loadAnalysisSource() {
         }
 
         analysisSource = await response.json()
-        sourceStdDevDiffLogFloor = analysisSource.stdDevDiffLogFloor ?? sourceStdDevDiffLogFloor
         renderCurrentAnalysis({ resetZoom: true })
     } catch (error) {
         console.error(error)

@@ -19,7 +19,7 @@
             <div class="chart-header">
                 <div>
                     <h2>Winrate Diff Scatter</h2>
-                    <p>x: mean diff, y: log2(abs standard deviation diff)</p>
+                    <p>x: mean diff, y: centered log winrate JSD</p>
                 </div>
                 <div class="chart-header-actions">
                     <div class="zoom-tools" aria-label="chart zoom controls">
@@ -35,26 +35,26 @@
                 <div class="chart-main">
                     <div class="chart-wrap">
                         <div class="axis-label x-label">winrate mean diff</div>
-                        <div class="axis-label y-label">log2 abs winrate standard deviation diff</div>
+                        <div class="axis-label y-label">centered log winrate Jensen-Shannon divergence</div>
                         <div id="chart" class="chart" role="img" aria-label="Hero icon scatter plot"></div>
                     </div>
 
                     <div class="quadrant-guide" aria-label="quadrant interpretation">
                         <div>
                             <strong>오른쪽 위</strong>
-                            <span>승률이 좋고 숙련도 영향도 큼. 고점은 있으나 조건을 타는 픽.</span>
+                            <span>승률이 좋고 티어별 승률 분포 차이도 큼. 특정 티어 조건을 타는 픽.</span>
                         </div>
                         <div>
                             <strong>오른쪽 아래</strong>
-                            <span>승률이 좋고 숙련도 영향은 작음. 이 맵에서 안정적으로 좋은 픽.</span>
+                            <span>승률이 좋고 티어별 승률 분포 차이는 작음. 이 맵에서 안정적으로 좋은 픽.</span>
                         </div>
                         <div>
                             <strong>왼쪽 위</strong>
-                            <span>승률은 낮지만 숙련도 영향은 큼. 특정 조건에서만 살아나는 픽.</span>
+                            <span>승률은 낮지만 티어별 승률 분포 차이는 큼. 특정 티어에서만 예외가 생기는 픽.</span>
                         </div>
                         <div>
                             <strong>왼쪽 아래</strong>
-                            <span>승률이 낮고 숙련도 영향도 작음. 전반적으로 힘을 못 받는 맵 약세 픽.</span>
+                            <span>승률이 낮고 티어별 승률 분포 차이도 작음. 전반적으로 힘을 못 받는 맵 약세 픽.</span>
                         </div>
                     </div>
                 </div>
@@ -161,7 +161,7 @@
                     <tr>
                         <th>Hero</th>
                         <th>Mean Diff</th>
-                        <th>Variance Diff</th>
+                        <th>Log JSD Δ</th>
                         <th>Pick Mean Diff</th>
                         <th>Cov Diff</th>
                     </tr>
